@@ -389,8 +389,12 @@ def _trim_ratio(q: int, t: int, prec: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def compute_pi(n_digits: int, workers: int | None = None,
-               chatty: bool = True) -> str:
-    """Return the first `n_digits` digits of pi after the decimal point."""
+               chatty: bool = True, on_stage=None) -> str:
+    """Return the first `n_digits` digits of pi after the decimal point.
+
+    `on_stage(label, seconds)` is called as each phase begins (seconds None)
+    and ends, so a UI can show what the machine is doing right now.
+    """
     sys.set_int_max_str_digits(0)
     sys.setrecursionlimit(100_000)
 
@@ -416,9 +420,14 @@ def compute_pi(n_digits: int, workers: int | None = None,
     timings: dict[str, float] = {}
     t_all = time.perf_counter()
 
+    current = {"label": ""}
+
     def stage(label: str):
+        current["label"] = label
         if chatty:
             print(f"  {C.GREY}{label:<34}{C.RESET}", end="", flush=True)
+        if on_stage:
+            on_stage(label, None)
         return time.perf_counter()
 
     def finish(key: str, t0: float):
@@ -426,6 +435,8 @@ def compute_pi(n_digits: int, workers: int | None = None,
         timings[key] = dt
         if chatty:
             print(f"{C.GREEN}{human_time(dt)}{C.RESET}", flush=True)
+        if on_stage:
+            on_stage(current["label"], dt)
 
     if not parallel:
         t = stage("binary splitting the series")

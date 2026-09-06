@@ -5,6 +5,7 @@ Run with:  python -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -476,11 +477,119 @@ class TestArt(unittest.TestCase):
                 self.assertEqual(len(colour), 3, name)
 
 
+class TestServerAPI(unittest.TestCase):
+    """The web UI is only as good as these handlers."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pi_explorer import server
+        cls.api = server
+        server.EXPLORER.release()
+
+    def test_status_reports_the_vault_and_machine(self):
+        s = self.api.api_status({})
+        self.assertEqual(s["digits"], DIGITS)
+        self.assertGreaterEqual(s["machine"]["threads"], 1)
+        self.assertGreater(s["machine"]["ceiling"], 0)
+
+    def test_search_matches_the_library(self):
+        j = self.api.api_search({"q": ["12345,999999"]})
+        first, feynman = j["results"]
+        direct = search.scan(_TAPE, "12345")
+        self.assertEqual(first["position"], direct.position)
+        self.assertEqual(first["count"], direct.count)
+        self.assertEqual(feynman["position"], hunt.FEYNMAN_POINT)
+        self.assertEqual(len(first["context"]), 3)
+
+    def test_search_strips_junk_and_reports_misses(self):
+        j = self.api.api_search({"q": ["1-2 3,,,"]})
+        self.assertEqual(j["results"][0]["needle"], "123")
+        miss = self.api.api_search({"q": ["1234567890123"]})["results"][0]
+        self.assertFalse(miss["found"])
+        self.assertIsNone(miss["context"])
+
+    def test_digits_endpoint_slices_correctly(self):
+        j = self.api.api_digits({"offset": ["761"], "count": ["6"]})
+        self.assertEqual(j["digits"], "999999")
+
+    def test_odds_are_finite_json(self):
+        j = self.api.api_odds({"digits": ["1000000"]})
+        blob = json.dumps(j)                    # would raise on inf/nan
+        self.assertIn("even_odds", blob)
+        self.assertEqual(len(j["rows"]), 16)
+
+    def test_birthday(self):
+        j = self.api.api_birthday({"date": ["2006-07-09"]})
+        self.assertEqual(j["date"], "2006-07-09")
+        self.assertTrue(any(r["found"] for r in j["rows"]))
+
+    def test_text_pairs_mode(self):
+        j = self.api.api_text({"words": ["cat"], "mode": ["pairs"]})
+        row = j["rows"][0]
+        self.assertTrue(row["found"])
+        self.assertEqual(search.decode_letters(_TAPE, row["position"] - 1, 3),
+                         "cat")
+
+    def test_shape_result_is_real(self):
+        j = self.api.api_shape({"shape": ["square3"], "maxWidth": ["64"]})
+        self.assertTrue(j["found"])
+        bits = search.bit_tape(_TAPE, j["searched"], "half")
+        offset = j["position"] - 1
+        for i, row in enumerate(j["shape"]):
+            start = offset + i * j["width"]
+            self.assertEqual(bits[start:start + len(row)].decode(), row)
+
+    def test_hunt_endpoint(self):
+        j = self.api.api_hunt({})
+        self.assertEqual(j["feynman"], "999999")
+        self.assertTrue(any(s["detail"] == "16470" for s in j["self_locating"]))
+
+    def test_random_endpoint(self):
+        j = self.api.api_random({"limit": ["50000"], "vs": ["mt"]})
+        self.assertEqual(sum(j["counts"]), 50_000)
+        self.assertIn("pi", j["columns"])
+        self.assertIn("mt", j["columns"])
+        json.dumps(j)
+
+    def test_unknown_shape_name_is_a_client_error(self):
+        with self.assertRaises(ValueError):
+            self.api.api_birthday({"date": ["not a date"]})
+
+    def test_http_round_trip(self):
+        """Bind a real socket and fetch a page and an endpoint."""
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.api.Handler)
+        httpd.verbose = False
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            with urllib.request.urlopen(base + "/") as page:
+                body = page.read()
+            self.assertIn(b"<title>\xcf\x80 Explorer</title>", body)
+            with urllib.request.urlopen(base + "/api/search?q=999999") as resp:
+                payload = json.load(resp)
+            self.assertEqual(payload["results"][0]["position"],
+                             hunt.FEYNMAN_POINT)
+            try:
+                urllib.request.urlopen(base + "/nope")
+                self.fail("expected 404")
+            except urllib.error.HTTPError as exc:
+                self.assertEqual(exc.code, 404)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class TestCLI(unittest.TestCase):
     def test_parser_accepts_every_command(self):
         from pi_explorer.cli import build_parser
         parser = build_parser()
         for argv in (["find", "123"], ["compute", "--auto"], ["random", "--deep"],
+                     ["serve", "--port", "9999"],
                      ["shape", "smiley"], ["wall", "--out", "x.png"],
                      ["birthday", "2006-07-09"], ["text", "cat"],
                      ["hunt"], ["odds"], ["walk", "1000"], ["quiz"],

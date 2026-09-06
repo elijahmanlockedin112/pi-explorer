@@ -797,6 +797,26 @@ def cmd_quiz(ctx: Context, args) -> int:
     return 0
 
 
+def cmd_serve(ctx: Context, args) -> int:
+    from .server import serve
+    url = f"http://{args.host}:{args.port}/"
+    print(rule("pi explorer, in a browser"))
+    print(kv("machine", profile_machine().describe()))
+    meta = vault_meta()
+    print(kv("vault", f"{commas(meta.get('digits', 0))} digits"
+                      if meta.get("digits") else "empty -- compute from the UI"))
+    print(kv("serving", f"{C.BOLD}{url}{C.RESET}"))
+    print(note("  localhost only. Ctrl-C to stop."))
+    if args.open:
+        import webbrowser
+        webbrowser.open(url)
+    try:
+        serve(args.host, args.port, verbose=args.verbose)
+    except OSError as exc:
+        raise SystemExit(f"{C.RED}could not bind {url}: {exc}{C.RESET}")
+    return 0
+
+
 def cmd_shell(ctx: Context, args) -> int:
     from .shell import repl
     return repl(ctx)
@@ -820,6 +840,7 @@ def build_parser() -> argparse.ArgumentParser:
   pi shape smiley                find a picture in pi's black-and-white form
   pi wall --out pi.png           paint a million digits as an image
   pi hunt                        Feynman point, palindromes, self-locators
+  pi serve                       the web UI, at localhost:8765
   pi                             interactive shell
 """)
     parser.add_argument("--version", action="version",
@@ -956,6 +977,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--study", type=int, default=0,
                    help="show this many digits first")
     p.set_defaults(func=cmd_quiz)
+
+    p = sub.add_parser("serve", help="run the web UI")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--open", action="store_true", help="open a browser too")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="log every request")
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("shell", help="interactive mode")
     p.set_defaults(func=cmd_shell)

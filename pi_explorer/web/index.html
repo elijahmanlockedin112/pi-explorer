@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>π Explorer</title>
+<style>
+:root{
+  --bg:#0b0d14; --panel:#12151f; --panel2:#171b28; --line:#232838;
+  --ink:#e6e9f2; --dim:#8b93ab; --faint:#5a6178;
+  --accent:#6ee7d5; --accent2:#a78bfa; --hot:#f472b6;
+  --good:#5ddba0; --warn:#fbbf6e; --bad:#f4737b;
+  --d0:#1b1f3b;--d1:#2e4a9e;--d2:#1f9ecf;--d3:#17b26a;--d4:#a6d21a;
+  --d5:#f4c518;--d6:#f58a1f;--d7:#ef4136;--d8:#e0399a;--d9:#8a4fff;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.01em}
+a{color:var(--accent)}
+code,.mono{font-family:var(--mono)}
+
+header{position:sticky;top:0;z-index:20;background:linear-gradient(#0b0d14,#0b0d14ee);
+  border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
+.bar{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;
+  gap:18px;align-items:center;flex-wrap:wrap}
+.logo{font-size:22px;font-weight:700;letter-spacing:-.02em}
+.logo span{color:var(--accent)}
+.stat{font-size:12px;color:var(--dim)}
+.stat b{color:var(--ink);font-weight:600}
+.grow{flex:1}
+
+.wrap{max-width:1180px;margin:0 auto;padding:20px}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:18px}
+.tab{padding:8px 15px;border-radius:9px;border:1px solid transparent;
+  background:transparent;color:var(--dim);cursor:pointer;font-size:13px;
+  font-weight:550;font-family:inherit}
+.tab:hover{color:var(--ink);background:var(--panel)}
+.tab.on{background:var(--panel2);border-color:var(--line);color:var(--accent)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:18px 20px;margin-bottom:16px}
+.card h2{font-size:15px;margin-bottom:4px}
+.sub{color:var(--dim);font-size:12.5px;margin-bottom:14px}
+
+input,select,button,textarea{font-family:inherit;font-size:13px}
+input[type=text],input[type=number],select,textarea{
+  background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+  border-radius:9px;padding:9px 12px;outline:none;width:100%}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+input.mono{font-family:var(--mono);letter-spacing:.06em}
+button{background:var(--accent);color:#06221d;border:0;border-radius:9px;
+  padding:9px 16px;font-weight:650;cursor:pointer;white-space:nowrap}
+button:hover{filter:brightness(1.1)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.ghost{background:var(--panel2);color:var(--ink);
+  border:1px solid var(--line);font-weight:550}
+button.ghost:hover{border-color:var(--accent);color:var(--accent)}
+button.chip{padding:5px 11px;font-size:12px;border-radius:7px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row>.grow{min-width:180px}
+label.f{display:block;font-size:11.5px;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px}
+.field{min-width:120px}
+
+.kv{display:grid;grid-template-columns:180px 1fr;gap:6px 14px;
+  font-size:13px;align-items:baseline}
+.kv dt{color:var(--dim)}
+.kv dd{margin:0}
+.big{font-size:20px;font-weight:700;font-family:var(--mono)}
+.good{color:var(--good)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+.hot{background:var(--hot);color:#1a0512;border-radius:3px;padding:1px 3px;
+  font-weight:700}
+.ctx{font-family:var(--mono);font-size:13px;color:var(--faint);
+  word-break:break-all;line-height:1.7}
+.ctx b{color:var(--dim);font-weight:400}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--dim);font-weight:600;font-size:11.5px;
+  text-transform:uppercase;letter-spacing:.07em;padding:6px 10px 6px 0;
+  border-bottom:1px solid var(--line)}
+td{padding:7px 10px 7px 0;border-bottom:1px solid #1a1e2b}
+td.n,th.n{text-align:right}
+tr:last-child td{border-bottom:0}
+
+.note{color:var(--dim);font-size:12.5px;margin-top:12px;line-height:1.65}
+.err{color:var(--bad);font-size:13px;margin-top:10px}
+.empty{color:var(--faint);font-size:13px;padding:22px 0;text-align:center}
+
+.prog{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden;
+  margin-top:10px}
+.prog i{display:block;height:100%;background:linear-gradient(90deg,
+  var(--accent2),var(--accent));width:0;transition:width .4s}
+.spin{display:inline-block;width:11px;height:11px;border-radius:50%;
+  border:2px solid var(--line);border-top-color:var(--accent);
+  animation:sp .7s linear infinite;vertical-align:-1px}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+#wallCanvas{width:100%;image-rendering:pixelated;border-radius:10px;
+  border:1px solid var(--line);background:#000;display:block}
+.grid{display:grid;gap:3px;justify-content:start;margin:10px 0}
+.cell{width:26px;height:26px;border-radius:5px;background:var(--panel2);
+  border:1px solid var(--line);cursor:pointer;padding:0}
+.cell.on{background:var(--ink);border-color:var(--ink)}
+.pv{font-family:var(--mono);font-size:15px;line-height:1.15;
+  letter-spacing:.14em;white-space:pre}
+.pv .in{color:#fff} .pv .out{color:#39405a}
+
+.bars{display:grid;grid-template-columns:auto auto 1fr auto;gap:3px 12px;
+  align-items:center;font-family:var(--mono);font-size:12.5px}
+.meter{height:9px;background:var(--panel2);border-radius:99px;position:relative}
+.meter i{position:absolute;top:-2px;width:4px;height:13px;border-radius:2px;
+  background:var(--good);transform:translateX(-50%)}
+.meter u{position:absolute;left:50%;top:-3px;width:1px;height:15px;
+  background:var(--faint)}
+.mx{display:grid;grid-template-columns:repeat(11,1fr);gap:2px;max-width:420px;
+  font-family:var(--mono);font-size:10px;color:var(--faint)}
+.mx div{aspect-ratio:1;border-radius:3px;display:grid;place-items:center}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11.5px;
+  background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <div class="logo">π <span>Explorer</span></div>
+    <div class="stat" id="vaultStat">connecting…</div>
+    <div class="grow"></div>
+    <div class="stat" id="machineStat"></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="card" id="computeCard">
+    <h2>The digit factory</h2>
+    <div class="sub" id="computeSub">Chudnovsky binary splitting, parallelised across your cores.</div>
+    <div class="row">
+      <div class="field grow">
+        <label class="f">digits to compute</label>
+        <input type="number" id="digitsIn" class="mono" value="2000000" min="1000" step="100000">
+      </div>
+      <div style="align-self:end"><button id="computeBtn">Compute</button></div>
+      <div style="align-self:end" class="row">
+        <button class="ghost chip" data-preset="100000">100k</button>
+        <button class="ghost chip" data-preset="1000000">1M</button>
+        <button class="ghost chip" data-preset="2000000">2M</button>
+        <button class="ghost chip" data-preset="5000000">5M</button>
+        <button class="ghost chip" id="autoBtn">auto</button>
+      </div>
+    </div>
+    <div id="computeProg" class="hide">
+      <div class="note"><span class="spin"></span> <span id="stageTxt">working…</span></div>
+      <div class="prog"><i id="progBar"></i></div>
+    </div>
+    <div id="computeErr" class="err hide"></div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-tab="search">Search</button>
+    <button class="tab" data-tab="wall">The wall</button>
+    <button class="tab" data-tab="shapes">Shapes</button>
+    <button class="tab" data-tab="random">Is it random?</button>
+    <button class="tab" data-tab="hunt">Pattern hunt</button>
+    <button class="tab" data-tab="odds">Odds</button>
+  </div>
+
+  <!-- SEARCH -->
+  <section data-panel="search">
+    <div class="card">
+      <h2>Find a number</h2>
+      <div class="sub">Where it first appears, how many times, and whether that is normal.</div>
+      <div class="row">
+        <div class="grow"><input type="text" id="q" class="mono"
+          placeholder="123456   or   8675309, 271828" autocomplete="off"></div>
+        <button id="searchBtn">Search</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost chip" data-q="1">1</button>
+        <button class="ghost chip" data-q="12">12</button>
+        <button class="ghost chip" data-q="123">123</button>
+        <button class="ghost chip" data-q="1234">1234</button>
+        <button class="ghost chip" data-q="12345">12345</button>
+        <button class="ghost chip" data-q="123456">123456</button>
+        <button class="ghost chip" data-q="999999">999999 (Feynman)</button>
+      </div>
+      <div id="searchOut"></div>
+    </div>
+
+    <div class="card">
+      <h2>Your birthday</h2>
+      <div class="sub">Every sensible way of writing a date, searched at once.</div>
+      <div class="row">
+        <div class="grow"><input type="text" id="dob" class="mono"
+          placeholder="2006-07-09   or   July 9 2006" autocomplete="off"></div>
+        <button id="dobBtn">Find it</button>
+      </div>
+      <div id="dobOut"></div>
+    </div>
+
+    <div class="card">
+      <h2>Words</h2>
+      <div class="sub">Read π two digits at a time and every pair becomes a letter.</div>
+      <div class="row">
+        <div class="grow"><input type="text" id="words" class="mono"
+          placeholder="cat, dog, math, space" autocomplete="off"></div>
+        <div class="field">
+          <select id="textMode">
+            <option value="pairs">pairs (dense, 1/26)</option>
+            <option value="a1z26">a=01…z=26</option>
+            <option value="ascii">ASCII codes</option>
+          </select>
+        </div>
+        <button id="wordsBtn">Search</button>
+      </div>
+      <div id="wordsOut"></div>
+    </div>
+  </section>
+
+  <!-- WALL -->
+  <section data-panel="wall" class="hide">
+    <div class="card">
+      <h2>π, looked at rather than read</h2>
+      <div class="sub">One pixel per digit. It looks like television static because,
+        as far as anyone can tell, it is.</div>
+      <div class="row">
+        <div class="field grow">
+          <label class="f">row width <span id="wLbl" class="mono"></span></label>
+          <input type="range" id="wallW" min="16" max="1000" value="500" style="width:100%">
+        </div>
+        <div class="field">
+          <label class="f">colour</label>
+          <select id="wallMode">
+            <option value="colour">10 colours</option>
+            <option value="half">black / white (0-4, 5-9)</option>
+            <option value="parity">black / white (even/odd)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="f">start at digit</label>
+          <input type="number" id="wallOff" class="mono" value="0" min="0" step="10000">
+        </div>
+        <div style="align-self:end"><button id="wallBtn">Draw</button></div>
+      </div>
+      <div class="note" id="wallInfo"></div>
+      <canvas id="wallCanvas"></canvas>
+    </div>
+  </section>
+
+  <!-- SHAPES -->
+  <section data-panel="shapes" class="hide">
+    <div class="card">
+      <h2>Find a picture in π</h2>
+      <div class="sub">Collapse π to one bit per digit and every pixel becomes a coin
+        flip. Draw a shape and we hunt for it at every row width.</div>
+      <div class="row" style="align-items:flex-start;gap:26px">
+        <div>
+          <label class="f">draw</label>
+          <div class="grid" id="shapeGrid"></div>
+          <div class="row">
+            <button class="ghost chip" id="gridMinus">−</button>
+            <span class="pill" id="gridSize">5 × 5</span>
+            <button class="ghost chip" id="gridPlus">+</button>
+            <button class="ghost chip" id="gridClear">clear</button>
+          </div>
+        </div>
+        <div class="grow">
+          <label class="f">or pick one</label>
+          <div class="row" id="shapeLib"></div>
+          <div class="row" style="margin-top:14px">
+            <div class="field">
+              <label class="f">bit rule</label>
+              <select id="shapeBits">
+                <option value="half">0-4 dark, 5-9 light</option>
+                <option value="parity">even dark, odd light</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="f">max row width</label>
+              <input type="number" id="shapeMaxW" class="mono" value="128" min="8" max="512">
+            </div>
+            <div style="align-self:end"><button id="shapeBtn">Hunt</button></div>
+          </div>
+        </div>
+      </div>
+      <div id="shapeOut"></div>
+    </div>
+  </section>
+
+  <!-- RANDOM -->
+  <section data-panel="random" class="hide">
+    <div class="card">
+      <h2>Is π actually random?</h2>
+      <div class="sub">The standard battery — run on π, and on real random sources
+        side by side, so a low p-value on π can be read against what randomness
+        actually looks like.</div>
+      <div class="row">
+        <div class="field">
+          <label class="f">digits to test</label>
+          <input type="number" id="randN" class="mono" value="1000000" step="100000">
+        </div>
+        <div class="field" style="align-self:end">
+          <label class="row" style="gap:6px;color:var(--dim);font-size:12.5px">
+            <input type="checkbox" id="randDeep" style="width:auto"> deep (5–6 digit blocks)</label>
+        </div>
+        <div style="align-self:end"><button id="randBtn">Run the battery</button></div>
+      </div>
+      <div id="randOut"></div>
+    </div>
+  </section>
+
+  <!-- HUNT -->
+  <section data-panel="hunt" class="hide">
+    <div class="card">
+      <h2>The weird stuff</h2>
+      <div class="sub">Feynman point, palindromes, self-locating strings, digit deserts.</div>
+      <button id="huntBtn">Go hunting</button>
+      <div id="huntOut"></div>
+    </div>
+  </section>
+
+  <!-- ODDS -->
+  <section data-panel="odds" class="hide">
+    <div class="card">
+      <h2>What is findable in what you have</h2>
+      <div class="sub">Every count assumes π is normal. Nobody has proved that it is.</div>
+      <div id="oddsOut"></div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const N = n => (n === null || n === undefined) ? "—" : Number(n).toLocaleString();
+const PAL = ["#1b1f3b","#2e4a9e","#1f9ecf","#17b26a","#a6d21a",
+             "#f4c518","#f58a1f","#ef4136","#e0399a","#8a4fff"];
+let STATE = {digits: 0};
+
+async function api(path, params) {
+  const url = new URL(path, location.origin);
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+  }
+  const r = await fetch(url);
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+function big(n) {
+  const names = [[1e18,"quintillion"],[1e15,"quadrillion"],[1e12,"trillion"],
+                 [1e9,"billion"],[1e6,"million"],[1e3,"thousand"]];
+  if (n < 1000) return n.toFixed(0);
+  for (const [s, name] of names) if (n >= s) return (n/s).toPrecision(3)+" "+name;
+  return n.toPrecision(3);
+}
+function verdict(p) {
+  if (p === null || p === undefined) return '<span class="pill">informational</span>';
+  const c = p < 0.001 ? "bad" : p < 0.01 ? "warn" : p < 0.05 ? "warn" : "good";
+  const w = p < 0.001 ? "BROKEN" : p < 0.01 ? "suspicious"
+          : p < 0.05 ? "eyebrow raised" : "looks random";
+  return `<span class="${c}">${w}</span> <span style="color:var(--faint)">p=${p.toFixed(4)}</span>`;
+}
+function busy(btn, on, label) {
+  btn.disabled = on;
+  if (on) { btn.dataset.t = btn.textContent; btn.innerHTML = '<span class="spin"></span>'; }
+  else btn.textContent = label || btn.dataset.t;
+}
+function fail(el, e) { el.innerHTML = `<div class="err">${e.message}</div>`; }
+
+/* ---------- status ---------- */
+async function refresh() {
+  const s = await api("/api/status");
+  STATE = s;
+  const d = s.digits;
+  $("#vaultStat").innerHTML = d
+    ? `vault: <b>${N(d)}</b> digits`
+    : `vault empty — compute some digits to begin`;
+  $("#machineStat").textContent = s.machine.description
+    + `  ·  ceiling ${N(s.machine.ceiling)} digits`;
+  $("#computeSub").textContent =
+    `Chudnovsky binary splitting on up to ${s.machine.workers} cores. `
+    + `30 seconds of patience gets you about ${N(s.machine.suggested)} digits.`;
+
+  const job = s.job || {};
+  const prog = $("#computeProg"), err = $("#computeErr");
+  if (job.state === "running") {
+    prog.classList.remove("hide"); err.classList.add("hide");
+    $("#computeBtn").disabled = true;
+    const frac = Math.min(0.97, (job.running_for || 0) / Math.max(job.estimate, .5));
+    $("#progBar").style.width = (frac * 100).toFixed(1) + "%";
+    $("#stageTxt").textContent =
+      `${job.stage} — ${N(job.target)} digits on ${job.workers} `
+      + `${job.workers === 1 ? "core" : "cores"}, `
+      + `${(job.running_for || 0).toFixed(1)}s elapsed`;
+    setTimeout(refresh, 500);
+  } else {
+    $("#computeBtn").disabled = false;
+    if (job.state === "done") {
+      prog.classList.remove("hide");
+      $("#progBar").style.width = "100%";
+      const slow = (job.stages || []).slice().sort((a,b)=>b[1]-a[1]).slice(0,3)
+        .map(s => `${s[0]} ${s[1].toFixed(2)}s`).join(" · ");
+      $("#stageTxt").innerHTML =
+        `<span class="good">done</span> — ${N(job.digits)} digits in `
+        + `${job.elapsed.toFixed(2)}s `
+        + `(${N(Math.round(job.digits / job.elapsed))} digits/sec)`
+        + (slow ? `<br><span style="color:var(--faint)">slowest stages: ${slow}</span>` : "");
+    } else prog.classList.add("hide");
+    if (job.state === "error") {
+      err.classList.remove("hide"); err.textContent = job.error;
+    }
+  }
+}
+
+/* ---------- compute ---------- */
+$("#computeBtn").onclick = async () => {
+  $("#computeErr").classList.add("hide");
+  try {
+    await api("/api/compute", {digits: $("#digitsIn").value});
+    refresh();
+  } catch (e) { $("#computeErr").classList.remove("hide"); $("#computeErr").textContent = e.message; }
+};
+$$("[data-preset]").forEach(b => b.onclick = () => $("#digitsIn").value = b.dataset.preset);
+$("#autoBtn").onclick = () => $("#digitsIn").value = STATE.machine.suggested;
+
+/* ---------- tabs ---------- */
+$$("#tabs .tab").forEach(t => t.onclick = () => {
+  $$("#tabs .tab").forEach(x => x.classList.toggle("on", x === t));
+  $$("[data-panel]").forEach(p => p.classList.toggle("hide", p.dataset.panel !== t.dataset.tab));
+  if (t.dataset.tab === "odds") loadOdds();
+  if (t.dataset.tab === "wall") drawWall();
+});
+
+/* ---------- search ---------- */
+function searchCard(r) {
+  const per = Math.pow(10, r.needle.length);
+  if (!r.found) {
+    const absent = Math.exp(-r.expected);
+    const late = r.even_odds_depth <= r.searched;
+    return `<div class="card" style="background:var(--panel2)">
+      <div class="big">${r.needle}</div>
+      <dl class="kv" style="margin-top:10px">
+        <dt>first appearance</dt><dd class="bad">not in the first ${N(r.searched)} digits</dd>
+        <dt>expected</dt><dd>${r.expected.toFixed(2)} occurrences (1 in ${N(per)})</dd>
+        <dt>odds of that</dt><dd>${(absent*100).toFixed(1)}% — missing is
+          ${absent > .05 ? "normal" : "unusual"} here</dd>
+        <dt>even-odds depth</dt><dd>${N(Math.round(r.even_odds_depth))} digits ${
+          late ? `— you are already ${(r.searched/r.even_odds_depth).toFixed(1)}× past that`
+               : `(${big(r.even_odds_depth)}), ${(r.even_odds_depth/r.searched).toFixed(0)}× more than you have`}</dd>
+      </dl>
+      <div class="note">${late
+        ? "This one is simply running late. π does not owe you a schedule."
+        : "Not a surprise, just out of reach. Compute deeper and it turns up."}</div></div>`;
+  }
+  const luck = r.luck < 0.5 ? `<span class="good">turned up ${(1/r.luck).toFixed(1)}× sooner than expected</span>`
+             : r.luck > 2 ? `<span class="warn">had to dig ${r.luck.toFixed(1)}× deeper than expected</span>`
+             : `right about where it should be`;
+  const [a,b,c] = r.context;
+  return `<div class="card" style="background:var(--panel2)">
+    <div class="big">${r.needle}</div>
+    <dl class="kv" style="margin-top:10px">
+      <dt>first appearance</dt><dd class="big good">position ${N(r.position)}</dd>
+      <dt>occurrences</dt><dd><b>${N(r.count)}</b> in ${N(r.searched)} digits</dd>
+      <dt>expected</dt><dd>${r.expected.toFixed(2)} (1 in ${N(per)} per position)</dd>
+      <dt>luck</dt><dd>${luck}</dd>
+      ${r.p_value !== null ? `<dt>count sanity</dt><dd>${verdict(r.p_value)}</dd>` : ""}
+      <dt>in context</dt><dd class="ctx"><b>…${a}</b><span class="hot">${b}</span><b>${c}…</b></dd>
+    </dl></div>`;
+}
+async function doSearch(q) {
+  const out = $("#searchOut");
+  if (q) $("#q").value = q;
+  const query = $("#q").value.trim();
+  if (!query) return;
+  busy($("#searchBtn"), true);
+  try {
+    const j = await api("/api/search", {q: query});
+    out.innerHTML = j.results.length ? j.results.map(searchCard).join("")
+      : `<div class="empty">nothing to search for</div>`;
+  } catch (e) { fail(out, e); }
+  busy($("#searchBtn"), false, "Search");
+}
+$("#searchBtn").onclick = () => doSearch();
+$("#q").onkeydown = e => { if (e.key === "Enter") doSearch(); };
+$$("[data-q]").forEach(b => b.onclick = () => doSearch(b.dataset.q));
+
+/* ---------- birthday ---------- */
+$("#dobBtn").onclick = async () => {
+  const out = $("#dobOut");
+  busy($("#dobBtn"), true);
+  try {
+    const j = await api("/api/birthday", {date: $("#dob").value.trim()});
+    out.innerHTML = `<table style="margin-top:14px"><thead><tr>
+      <th>format</th><th>digits</th><th>first appearance</th>
+      <th class="n">hits</th><th class="n">odds</th></tr></thead><tbody>` +
+      j.rows.map(r => `<tr><td>${r.style}</td><td class="mono">${r.digits}</td>
+        <td>${r.found ? `<span class="good">position ${N(r.position)}</span>`
+                      : `<span class="bad">not found</span>`}</td>
+        <td class="n">${N(r.count)}</td>
+        <td class="n">${(r.odds*100).toFixed(2)}%</td></tr>`).join("") +
+      `</tbody></table><div class="note">Every date ever, and every date to come, is
+       in there somewhere — an 8-digit date is even money by 69 million digits and
+       near certain by 1.5 billion.</div>`;
+  } catch (e) { fail(out, e); }
+  busy($("#dobBtn"), false, "Find it");
+};
+$("#dob").onkeydown = e => { if (e.key === "Enter") $("#dobBtn").click(); };
+
+/* ---------- words ---------- */
+$("#wordsBtn").onclick = async () => {
+  const out = $("#wordsOut");
+  busy($("#wordsBtn"), true);
+  try {
+    const j = await api("/api/text", {words: $("#words").value, mode: $("#textMode").value});
+    out.innerHTML = j.rows.map(r => {
+      if (!r.found) return `<div class="card" style="background:var(--panel2)">
+        <div class="big">${r.word}</div>
+        <dl class="kv" style="margin-top:10px">
+        <dt>first appearance</dt><dd class="bad">not found in what you have</dd>
+        <dt>expected around</dt><dd>${N(r.expected_digits)} digits deep
+          (${big(r.expected_digits)})</dd>
+        <dt>you would need</dt><dd>${(r.expected_digits/j.searched).toFixed(0)}× more digits</dd>
+        </dl></div>`;
+      const ctx = r.context ? `<dt>in context</dt><dd class="ctx"><b>…${r.context[0]}</b>
+        <span class="hot">${r.context[1]}</span><b>${r.context[2]}…</b></dd>` : "";
+      return `<div class="card" style="background:var(--panel2)">
+        <div class="big">${r.word}</div>
+        <dl class="kv" style="margin-top:10px">
+        <dt>first appearance</dt><dd class="good">${r.letter
+          ? `letter ${N(r.letter)} (digit ${N(r.position)})`
+          : `position ${N(r.position)}`}</dd>
+        <dt>occurrences</dt><dd>${N(r.count)}</dd>
+        <dt>expected around</dt><dd>${N(r.expected_digits)} digits deep</dd>
+        ${ctx}</dl></div>`;
+    }).join("") || `<div class="empty">type some words</div>`;
+  } catch (e) { fail(out, e); }
+  busy($("#wordsBtn"), false, "Search");
+};
+$("#words").onkeydown = e => { if (e.key === "Enter") $("#wordsBtn").click(); };
+
+/* ---------- wall ---------- */
+$("#wallW").oninput = () => $("#wLbl").textContent = $("#wallW").value + " px";
+async function drawWall() {
+  if (!STATE.digits) { $("#wallInfo").textContent = "no digits yet"; return; }
+  const w = +$("#wallW").value, off = +$("#wallOff").value || 0;
+  const mode = $("#wallMode").value;
+  $("#wLbl").textContent = w + " px";
+  const rows = Math.min(700, Math.floor((STATE.digits - off) / w));
+  if (rows < 1) { $("#wallInfo").textContent = "not enough digits from there"; return; }
+  const count = rows * w;
+  const j = await api("/api/digits", {offset: off, count});
+  const cv = $("#wallCanvas");
+  cv.width = w; cv.height = rows;
+  const ctx = cv.getContext("2d");
+  const img = ctx.createImageData(w, rows);
+  const s = j.digits;
+  for (let i = 0; i < count && i < s.length; i++) {
+    const d = s.charCodeAt(i) - 48;
+    let r, g, b;
+    if (mode === "colour") {
+      const c = PAL[d]; r = parseInt(c.slice(1,3),16);
+      g = parseInt(c.slice(3,5),16); b = parseInt(c.slice(5,7),16);
+    } else {
+      const on = mode === "half" ? d >= 5 : d % 2 === 1;
+      r = g = b = on ? 240 : 16;
+    }
+    const p = i * 4;
+    img.data[p] = r; img.data[p+1] = g; img.data[p+2] = b; img.data[p+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  $("#wallInfo").innerHTML = `${N(count)} digits — digit ${N(off+1)} to
+    ${N(off+count)}, ${N(rows)} rows of ${N(w)}. One pixel per digit.`;
+}
+$("#wallBtn").onclick = drawWall;
+$("#wallMode").onchange = drawWall;
+
+/* ---------- shapes ---------- */
+let GRID = 5, CELLS = [], PREV_GRID = 5;
+function buildGrid() {
+  const g = $("#shapeGrid");
+  g.style.gridTemplateColumns = `repeat(${GRID},26px)`;
+  const old = CELLS, oldG = PREV_GRID;
+  CELLS = Array.from({length: GRID*GRID}, (_, i) => {
+    const r = Math.floor(i / GRID), c = i % GRID;
+    return (old.length && r < oldG && c < oldG) ? (old[r*oldG + c] || 0) : 0;
+  });
+  PREV_GRID = GRID;
+  g.innerHTML = "";
+  CELLS.forEach((v, i) => {
+    const b = document.createElement("button");
+    b.className = "cell" + (v ? " on" : "");
+    b.onclick = () => { CELLS[i] ^= 1; b.classList.toggle("on"); };
+    g.appendChild(b);
+  });
+  $("#gridSize").textContent = `${GRID} × ${GRID}`;
+}
+function setShape(rows) {
+  GRID = Math.max(rows.length, rows[0].length);
+  buildGrid();
+  rows.forEach((row, r) => [...row].forEach((ch, c) => {
+    if (ch === "1") { CELLS[r*GRID+c] = 1; $("#shapeGrid").children[r*GRID+c].classList.add("on"); }
+  }));
+}
+$("#gridPlus").onclick = () => { GRID = Math.min(8, GRID+1); buildGrid(); };
+$("#gridMinus").onclick = () => { GRID = Math.max(2, GRID-1); buildGrid(); };
+$("#gridClear").onclick = () => { CELLS = CELLS.map(()=>0); buildGrid(); };
+buildGrid();
+
+api("/api/shapes").then(j => {
+  $("#shapeLib").innerHTML = j.shapes.map(s =>
+    `<button class="ghost chip" data-shape="${s.name}">${s.name}</button>`).join("");
+  $$("[data-shape]").forEach(b => b.onclick = () => {
+    setShape(j.shapes.find(s => s.name === b.dataset.shape).rows);
+  });
+});
+
+/* Trim blank rows and columns before searching. A 5x4 drawing sitting in a
+   5x5 grid must be hunted as 5x4 -- an extra blank row is five more pixels to
+   match, which multiplies the odds against you by 32 and quietly turns up a
+   different, deeper hit than the shape you actually drew. */
+function shapeRows() {
+  let rows = [];
+  for (let r = 0; r < GRID; r++)
+    rows.push(CELLS.slice(r*GRID, (r+1)*GRID).map(v => v ? "#" : ".").join(""));
+  while (rows.length && !rows[0].includes("#")) rows.shift();
+  while (rows.length && !rows[rows.length-1].includes("#")) rows.pop();
+  if (!rows.length) return [];
+  let left = 0, right = rows[0].length - 1;
+  while (left <= right && rows.every(r => r[left] === ".")) left++;
+  while (right >= left && rows.every(r => r[right] === ".")) right--;
+  return rows.map(r => r.slice(left, right + 1));
+}
+
+$("#shapeBtn").onclick = async () => {
+  const out = $("#shapeOut");
+  const rows = shapeRows();
+  if (!rows.length) { out.innerHTML = `<div class="err">draw something first</div>`; return; }
+  busy($("#shapeBtn"), true);
+  try {
+    const j = await api("/api/shape", {shape: rows.join("/"), bits: $("#shapeBits").value,
+                                       maxWidth: $("#shapeMaxW").value});
+    let html = `<dl class="kv" style="margin-top:16px">
+      <dt>grid</dt><dd>${j.shape[0].length} × ${j.shape.length} = ${j.cells} pixels</dd>
+      <dt>odds per spot</dt><dd>1 in ${N(j.one_in)}</dd>
+      <dt>row widths tried</dt><dd>${N(j.widths)} — that is what makes it findable
+        at all, it multiplies your chances by ${N(j.widths)}</dd>
+      <dt>expected finds</dt><dd>${j.expected.toFixed(4)}</dd>
+      <dt>scanned</dt><dd>${N(j.searched)} digits on ${j.workers}
+        ${j.workers===1?"core":"cores"} in ${j.seconds.toFixed(2)}s</dd></dl>`;
+    if (j.found) {
+      html += `<div class="card" style="background:var(--panel2);margin-top:14px">
+        <div class="big good">FOUND at digit ${N(j.position)}</div>
+        <div class="note">when π is laid out <b>${j.width}</b> pixels wide —
+          row ${N(j.row)}, column ${N(j.column)}</div>
+        <div class="pv" style="margin-top:12px">` +
+        j.preview.map(([line, inside, start, len]) =>
+          [...line].map((ch, i) => {
+            const hot = inside && i >= start && i < start + len;
+            const glyph = ch === "1" ? "█" : "·";
+            return `<span class="${hot ? "in" : "out"}">${glyph}</span>`;
+          }).join("")).join("<br>") +
+        `</div><div class="note">bright = your shape, dim = the digits around it.</div></div>`;
+    } else {
+      html += `<div class="card" style="background:var(--panel2);margin-top:14px">
+        <div class="big bad">Not found</div>
+        <div class="note">You would need about ${big(j.even_odds)} digits for an
+          even-money shot. Try a smaller grid, a wider max row width, or more digits.</div></div>`;
+    }
+    out.innerHTML = html;
+  } catch (e) { fail(out, e); }
+  busy($("#shapeBtn"), false, "Hunt");
+};
+
+/* ---------- randomness ---------- */
+$("#randBtn").onclick = async () => {
+  const out = $("#randOut");
+  busy($("#randBtn"), true);
+  out.innerHTML = `<div class="empty"><span class="spin"></span> running the battery…</div>`;
+  try {
+    const j = await api("/api/random", {limit: $("#randN").value,
+      deep: $("#randDeep").checked ? 1 : 0, vs: "mt,os", matrix: 1});
+    const exp = j.expected_each;
+    let html = `<h3 style="margin:18px 0 10px">Digit frequencies</h3><div class="bars">`;
+    j.counts.forEach((c, d) => {
+      const z = (c - exp) / Math.sqrt(exp * 0.9);
+      const pos = Math.max(0, Math.min(100, 50 + z / 4 * 50));
+      html += `<div style="color:var(--d${d});font-weight:700">${d}</div>
+        <div>${N(c)}</div>
+        <div class="meter"><u></u><i style="left:${pos}%;background:${
+          Math.abs(z)<2?"var(--good)":Math.abs(z)<3?"var(--warn)":"var(--bad)"}"></i></div>
+        <div style="color:var(--dim)">${z>=0?"+":""}${z.toFixed(2)}σ</div>`;
+    });
+    html += `</div><div class="note">Centre line is exactly ${N(Math.round(exp))}
+      (10.0000%); the gauge runs to four sigma either side.</div>`;
+
+    const names = {pi: "π", mt: "Mersenne Twister", os: "OS crypto RNG"};
+    const keys = j.columns.pi.map(t => t.key);
+    html += `<h3 style="margin:22px 0 10px">The battery</h3>
+      <table><thead><tr><th>test</th><th>statistic on π</th><th>verdict</th>` +
+      Object.keys(j.columns).filter(k => k !== "pi")
+        .map(k => `<th class="n">${names[k]}</th>`).join("") +
+      `</tr></thead><tbody>`;
+    keys.forEach((key, i) => {
+      const t = j.columns.pi[i];
+      html += `<tr><td>${t.name}</td><td class="mono" style="color:var(--dim)">${t.detail}</td>
+        <td>${verdict(t.p)}</td>` +
+        Object.entries(j.columns).filter(([k]) => k !== "pi").map(([, col]) => {
+          const m = col.find(x => x.key === key);
+          if (!m || m.p === null) return `<td class="n" style="color:var(--faint)">—</td>`;
+          const c = m.p < 0.001 ? "bad" : m.p < 0.01 ? "warn" : m.p < 0.05 ? "warn" : "good";
+          return `<td class="n ${c}">${m.p.toFixed(4)}</td>`;
+        }).join("") + `</tr>`;
+    });
+    html += `</tbody></table>`;
+
+    html += `<div class="card" style="background:var(--panel2);margin-top:18px">` +
+      (j.failures.length
+        ? `<div class="big warn">Flagged: ${j.failures.join(", ")}</div>
+           <div class="note">With ${j.scored} tests, the occasional low p-value is the
+           expected behaviour, not a discovery. Run it on a different window.</div>`
+        : `<div class="big good">π passed everything.</div>
+           <div class="note">Across ${N(j.searched)} digits there is no test here that
+           can tell it apart from a hardware random number generator — and look at the
+           control columns: real randomness trips these tests too.</div>`) +
+      `<div class="note">Nobody has ever proved π is normal. Nobody has ever found
+       where it breaks either.</div></div>`;
+
+    if (j.matrix) {
+      const tot = j.matrix.flat().reduce((a,b)=>a+b,0), e = tot/100;
+      html += `<h3 style="margin:22px 0 10px">Which digit follows which</h3><div class="mx">
+        <div></div>` + [...Array(10).keys()].map(d=>`<div>${d}</div>`).join("");
+      j.matrix.forEach((row, a) => {
+        html += `<div>${a}</div>` + row.map(v => {
+          const z = (v - e) / Math.sqrt(e);
+          const t = Math.max(0, Math.min(1, (z + 4) / 8));
+          const c = `hsl(${210 - t*210} 65% ${18 + t*32}%)`;
+          return `<div style="background:${c}" title="${a}→ ${v}"></div>`;
+        }).join("");
+      });
+      html += `</div><div class="note">Flat colour means no digit predicts the next.</div>`;
+    }
+    out.innerHTML = html;
+  } catch (e) { fail(out, e); }
+  busy($("#randBtn"), false, "Run the battery");
+};
+
+/* ---------- hunt ---------- */
+$("#huntBtn").onclick = async () => {
+  const out = $("#huntOut");
+  busy($("#huntBtn"), true);
+  out.innerHTML = `<div class="empty"><span class="spin"></span> hunting…</div>`;
+  try {
+    const j = await api("/api/hunt");
+    const list = (title, items) => `<h3 style="margin:20px 0 8px">${title}</h3>` +
+      (items.length ? `<dl class="kv">${items.join("")}</dl>`
+                    : `<div class="note">nothing in this window</div>`);
+    let html = `<h3 style="margin:20px 0 8px">The Feynman Point</h3>
+      <dl class="kv"><dt>position 762</dt><dd class="mono big ${
+        j.feynman === "999999" ? "good" : "bad"}">${j.feynman}</dd></dl>
+      <div class="note">Feynman wanted to recite π to here, then say “and so on”,
+        implying with a straight face that π is rational.</div>`;
+    html += list("Longest repeats", j.runs.map(r =>
+      `<dt>${r.label}</dt><dd class="mono">${r.detail}
+       <span style="color:var(--faint)">at ${N(r.position)}</span></dd>`));
+    if (j.palindrome) html += `<h3 style="margin:20px 0 8px">Longest palindrome</h3>
+      <dl class="kv"><dt>${j.palindrome.detail.length} digits</dt>
+      <dd class="mono">${j.palindrome.detail}
+      <span style="color:var(--faint)">at ${N(j.palindrome.position)}</span></dd></dl>`;
+    html += list("Self-locating strings", j.self_locating.map(r =>
+      `<dt class="mono">${r.detail}</dt><dd>begins at its own position,
+       ${N(r.position)}</dd>`));
+    html += list("Staircases", j.staircases.map(r =>
+      `<dt>${r.label}</dt><dd class="mono">${r.detail}
+       <span style="color:var(--faint)">at ${N(r.position)}</span></dd>`));
+    html += list("Digit deserts", j.deserts.map(r =>
+      `<dt>${r.label}</dt><dd>${r.detail}
+       <span style="color:var(--faint)">from ${N(r.position)}</span></dd>`));
+    html += list("The hold-outs", j.holdouts.map(h =>
+      `<dt>${h.k}-digit hold-out</dt><dd>${h.position > 0
+        ? `<span class="mono">${h.string}</span> hides until position ${N(h.position)}`
+        : `${N(h.missing)} never show up (e.g. ${h.examples.join(", ")})`}</dd>`));
+    out.innerHTML = html;
+  } catch (e) { fail(out, e); }
+  busy($("#huntBtn"), false, "Go hunting");
+};
+
+/* ---------- odds ---------- */
+async function loadOdds() {
+  const out = $("#oddsOut");
+  try {
+    const j = await api("/api/odds");
+    out.innerHTML = `<div class="note" style="margin:0 0 12px">
+      Inside your ${N(j.digits)} digits:</div>
+      <table><thead><tr><th class="n">digits</th><th class="n">odds per spot</th>
+      <th class="n">expected hits</th><th class="n">will it appear?</th>
+      <th class="n">even-odds depth</th></tr></thead><tbody>` +
+      j.rows.map(r => {
+        const c = r.chance > .9999 ? "good" : r.chance > .5 ? "" : r.chance > .01 ? "warn" : "bad";
+        const label = r.chance > .9999 ? "certain"
+          : (r.chance*100).toPrecision(4).replace(/0+$/,"") + "%";
+        return `<tr><td class="n">${r.length}</td>
+          <td class="n" style="color:var(--dim)">1 in ${N(r.one_in)}</td>
+          <td class="n">${r.expected < .005 ? "0.00" : r.expected.toFixed(2)}</td>
+          <td class="n ${c}">${label}</td>
+          <td class="n" style="color:var(--dim)">${big(r.even_odds)}</td></tr>`;
+      }).join("") + `</tbody></table>
+      <div class="note">Every 4-digit PIN is already in your first two million digits.
+      A birthday needs about 69 million for even odds, and is near certain by 1.5
+      billion. A 16-digit card number needs 6.93 quadrillion — nobody has ever
+      computed that far.</div>`;
+  } catch (e) { fail(out, e); }
+}
+
+refresh();
+setInterval(() => { if ((STATE.job || {}).state !== "running") refresh(); }, 5000);
+</script>
+</body>
+</html>

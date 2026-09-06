@@ -11,9 +11,32 @@ whether π is actually random.
 **Pure standard library. No dependencies. One `git clone` and it runs.**
 
 ```bash
+python pi.py serve              # the web UI, at localhost:8765
 python pi.py compute --auto     # size the run to this machine and go
 python pi.py                    # interactive shell
 ```
+
+---
+
+## The web UI
+
+`python pi.py serve` puts the whole thing in a browser at
+<http://localhost:8765> — localhost only, no framework, no build step, one
+HTML file and `http.server`.
+
+- **Search** — type a number, get the first position, the occurrence count,
+  the odds, and the digits either side of the hit.
+- **The wall** — π drawn to a canvas at one pixel per digit, with a row-width
+  slider and a black-and-white mode. Scroll anywhere in the vault.
+- **Shapes** — draw on a grid (or pick from the library) and hunt for it at
+  every row width, with the odds shown before you commit.
+- **Is it random?** — the full battery with sigma gauges per digit, control
+  columns for the Mersenne Twister and your OS crypto RNG, and the
+  digit-follows-digit heatmap.
+- **Pattern hunt** and **Odds** — the same findings the CLI prints.
+
+Computing runs in a background thread, so the page stays live and reports
+which stage the machine is in and how long each one took.
 
 ---
 
@@ -324,6 +347,7 @@ pi walk [STEPS] [--svg F] [--height H]
 pi rain [--seconds S]
 pi quiz [--study N]
 
+pi serve [--port N] [--host H] [--open] [-v]        the web UI
 pi shell                                           interactive (also the default)
 ```
 

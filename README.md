@@ -25,7 +25,13 @@ python pi.py                    # interactive shell
 HTML file and `http.server`.
 
 - **Search** — type a number, get the first position, the occurrence count,
-  the odds, and the digits either side of the hit.
+  the odds, and the digits either side of the hit. Every occurrence is a
+  clickable chip that drops you at that spot in the digits.
+- **The digits** — the actual computed digits, numbered, a hundred to a row,
+  scrollable end to end. Two million digits will not go in the DOM, so only
+  the visible rows are built and the digits arrive in 64k chunks that get
+  cached; twenty thousand rows scroll as smoothly as twenty. Search hits are
+  highlighted in place, and you can jump to any position.
 - **The wall** — π drawn to a canvas at one pixel per digit, with a row-width
   slider and a black-and-white mode. Scroll anywhere in the vault.
 - **Shapes** — draw on a grid (or pick from the library) and hunt for it at

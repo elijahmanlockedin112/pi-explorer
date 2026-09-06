@@ -99,6 +99,23 @@ tr:last-child td{border-bottom:0}
 
 #wallCanvas{width:100%;image-rendering:pixelated;border-radius:10px;
   border:1px solid var(--line);background:#000;display:block}
+
+/* the digit reel: only the visible rows exist in the DOM, so two million
+   digits scroll as smoothly as twenty */
+.scroller{height:62vh;overflow-y:auto;overflow-x:hidden;position:relative;
+  background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  margin-top:14px;font-family:var(--mono);font-size:13px}
+.reel{position:absolute;top:0;left:0;right:0}
+.drow{display:flex;gap:16px;height:22px;align-items:center;padding:0 14px;
+  white-space:pre}
+.drow:hover{background:#1b2030}
+.drow .idx{color:var(--faint);text-align:right;flex:0 0 auto;
+  font-variant-numeric:tabular-nums;user-select:none}
+.drow .dg{letter-spacing:.1em}
+mark{background:var(--hot);color:#1a0512;border-radius:3px;padding:0 1px;
+  font-weight:700}
+mark.soft{background:#3c2d52;color:var(--ink);font-weight:400}
+.hits{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .grid{display:grid;gap:3px;justify-content:start;margin:10px 0}
 .cell{width:26px;height:26px;border-radius:5px;background:var(--panel2);
   border:1px solid var(--line);cursor:pointer;padding:0}
@@ -161,6 +178,7 @@ tr:last-child td{border-bottom:0}
 
   <div class="tabs" id="tabs">
     <button class="tab on" data-tab="search">Search</button>
+    <button class="tab" data-tab="digits">The digits</button>
     <button class="tab" data-tab="wall">The wall</button>
     <button class="tab" data-tab="shapes">Shapes</button>
     <button class="tab" data-tab="random">Is it random?</button>
@@ -217,6 +235,39 @@ tr:last-child td{border-bottom:0}
         <button id="wordsBtn">Search</button>
       </div>
       <div id="wordsOut"></div>
+    </div>
+  </section>
+
+  <!-- DIGITS -->
+  <section data-panel="digits" class="hide">
+    <div class="card">
+      <h2>Every digit you have computed</h2>
+      <div class="sub" id="digitsSub">3.14159…</div>
+      <div class="row">
+        <div class="field">
+          <label class="f">digits per row</label>
+          <select id="perRow">
+            <option>50</option><option selected>100</option>
+            <option>200</option><option>500</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="f">jump to digit</label>
+          <input type="number" id="jumpTo" class="mono" value="1" min="1">
+        </div>
+        <div style="align-self:end"><button id="jumpBtn">Go</button></div>
+        <div style="align-self:end" class="row">
+          <button class="ghost chip" data-jump="1" data-len="1">start</button>
+          <button class="ghost chip" data-jump="762" data-len="6">Feynman point</button>
+          <button class="ghost chip" data-jump="16470" data-len="5">16470 (self-locating)</button>
+          <button class="ghost chip" id="endBtn">end</button>
+        </div>
+      </div>
+      <div class="scroller" id="digitScroll">
+        <div id="digitSpacer"></div>
+        <div class="reel" id="digitReel"></div>
+      </div>
+      <div class="note" id="digitPos"></div>
     </div>
   </section>
 
@@ -434,6 +485,7 @@ $$("#tabs .tab").forEach(t => t.onclick = () => {
   $$("[data-panel]").forEach(p => p.classList.toggle("hide", p.dataset.panel !== t.dataset.tab));
   if (t.dataset.tab === "odds") loadOdds();
   if (t.dataset.tab === "wall") drawWall();
+  if (t.dataset.tab === "digits") showDigits();
 });
 
 /* ---------- search ---------- */
@@ -470,6 +522,15 @@ function searchCard(r) {
       <dt>luck</dt><dd>${luck}</dd>
       ${r.p_value !== null ? `<dt>count sanity</dt><dd>${verdict(r.p_value)}</dd>` : ""}
       <dt>in context</dt><dd class="ctx"><b>…${a}</b><span class="hot">${b}</span><b>${c}…</b></dd>
+      <dt>see it</dt><dd>
+        <button class="chip" data-goto="${r.position}" data-len="${r.needle.length}"
+          data-hits='${JSON.stringify(r.positions)}'>show me in the digits</button>
+        <div class="hits">${r.positions.slice(0, 24).map(p =>
+          `<button class="ghost chip" data-goto="${p + 1}"
+             data-len="${r.needle.length}"
+             data-hits='${JSON.stringify(r.positions)}'>${N(p + 1)}</button>`).join("")}
+          ${r.truncated ? `<span class="pill">+${N(r.count - r.positions.length)} more</span>` : ""}
+        </div></dd>
     </dl></div>`;
 }
 async function doSearch(q) {
@@ -542,6 +603,160 @@ $("#wordsBtn").onclick = async () => {
   busy($("#wordsBtn"), false, "Search");
 };
 $("#words").onkeydown = e => { if (e.key === "Enter") $("#wordsBtn").click(); };
+
+/* ---------- the digit reel ----------
+   Two million digits will not go in the DOM, so only the visible rows are
+   built and the digits themselves arrive in 64k chunks that get cached. */
+const ROW_H = 22, CHUNK = 1 << 16;
+let PER_ROW = 100, HILITE = null, ALL_HITS = [];
+const chunks = new Map(), pending = new Map();
+
+function chunkOf(i) {
+  if (chunks.has(i)) return Promise.resolve(chunks.get(i));
+  if (pending.has(i)) return pending.get(i);
+  const p = api("/api/digits", {offset: i * CHUNK, count: CHUNK})
+    .then(j => { chunks.set(i, j.digits); pending.delete(i); return j.digits; })
+    .catch(e => { pending.delete(i); throw e; });
+  pending.set(i, p);
+  return p;
+}
+function haveSlice(start, len) {
+  const first = Math.floor(start / CHUNK);
+  const last = Math.floor((start + Math.max(len, 1) - 1) / CHUNK);
+  const missing = [];
+  for (let c = first; c <= last; c++) if (!chunks.has(c)) missing.push(c);
+  if (missing.length) return {text: null, missing};
+  let out = "";
+  for (let c = first; c <= last; c++) {
+    const s = chunks.get(c), base = c * CHUNK;
+    out += s.slice(Math.max(start, base) - base,
+                   Math.min(start + len, base + s.length) - base);
+  }
+  return {text: out, missing: []};
+}
+/* Wrap the highlighted span, plus any other hits that fall in this row. */
+function markRow(text, rowStart) {
+  const spans = [];
+  if (HILITE && HILITE.end > rowStart && HILITE.start < rowStart + text.length)
+    spans.push([HILITE.start, HILITE.end, "hit"]);
+  for (const h of ALL_HITS) {
+    if (HILITE && h === HILITE.start) continue;
+    if (h + HILITE_LEN > rowStart && h < rowStart + text.length)
+      spans.push([h, h + HILITE_LEN, "soft"]);
+  }
+  if (!spans.length) return text;
+  spans.sort((a, b) => a[0] - b[0]);
+  let out = "", cursor = 0;
+  for (const [s, e, kind] of spans) {
+    const a = Math.max(0, s - rowStart), b = Math.min(text.length, e - rowStart);
+    if (b <= cursor) continue;
+    out += text.slice(cursor, Math.max(cursor, a));
+    out += `<mark class="${kind === "soft" ? "soft" : ""}">`
+         + text.slice(Math.max(cursor, a), b) + `</mark>`;
+    cursor = b;
+  }
+  return out + text.slice(cursor);
+}
+let HILITE_LEN = 0, drawing = false;
+function drawReel() {
+  const sc = $("#digitScroll"), total = STATE.digits || 0;
+  if (!total) { $("#digitReel").innerHTML =
+    `<div class="empty">no digits yet — compute some above</div>`; return; }
+  const rows = Math.ceil(total / PER_ROW);
+  $("#digitSpacer").style.height = (rows * ROW_H) + "px";
+  const first = Math.max(0, Math.floor(sc.scrollTop / ROW_H) - 2);
+  const last = Math.min(rows, first + Math.ceil(sc.clientHeight / ROW_H) + 4);
+  const start = first * PER_ROW;
+  const len = Math.min(total, last * PER_ROW) - start;
+  if (len <= 0) return;
+  const {text, missing} = haveSlice(start, len);
+  if (!text) {
+    if (!drawing) {
+      drawing = true;
+      Promise.all(missing.map(chunkOf))
+        .then(() => { drawing = false; drawReel(); })
+        .catch(() => { drawing = false; });
+    }
+    return;
+  }
+  const pad = String(total).length;
+  let html = "";
+  for (let r = first; r < last; r++) {
+    const rowStart = r * PER_ROW;
+    const slice = text.slice(rowStart - start, rowStart - start + PER_ROW);
+    if (!slice) break;
+    html += `<div class="drow"><span class="idx" style="width:${pad}ch">`
+          + N(rowStart + 1) + `</span><span class="dg">`
+          + markRow(slice, rowStart) + `</span></div>`;
+  }
+  $("#digitReel").style.transform = `translateY(${first * ROW_H}px)`;
+  $("#digitReel").innerHTML = html;
+  updateDigitsSub();
+  $("#digitPos").textContent =
+    `showing digits ${N(start + 1)}–${N(Math.min(total, last * PER_ROW))} `
+    + `of ${N(total)}`;
+}
+function updateDigitsSub() {
+  const head = (chunks.get(0) || "").slice(0, 24);
+  $("#digitsSub").textContent =
+    (head ? `3.${head}…  —  ` : "")
+    + `${N(STATE.digits)} digits, `
+    + `${N(Math.ceil((STATE.digits || 0) / PER_ROW))} rows of ${PER_ROW}.`;
+}
+function showDigits(position, length) {
+  updateDigitsSub();
+  if (position) {
+    HILITE = {start: position - 1, end: position - 1 + (length || 1)};
+    HILITE_LEN = length || 1;
+    const row = Math.floor((position - 1) / PER_ROW);
+    const sc = $("#digitScroll");
+    sc.scrollTop = Math.max(0, row * ROW_H - sc.clientHeight / 2 + ROW_H);
+    $("#jumpTo").value = position;
+  }
+  drawReel();
+}
+let queued = false;
+$("#digitScroll").addEventListener("scroll", () => {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; drawReel(); });
+});
+$("#perRow").onchange = () => {
+  PER_ROW = +$("#perRow").value;
+  showDigits(+$("#jumpTo").value || 1, HILITE_LEN);
+};
+$("#jumpBtn").onclick = () => {
+  const p = Math.max(1, Math.min(+$("#jumpTo").value || 1, STATE.digits));
+  HILITE = {start: p - 1, end: p}; HILITE_LEN = 1; ALL_HITS = [];
+  showDigits(p, 1);
+};
+$("#jumpTo").onkeydown = e => { if (e.key === "Enter") $("#jumpBtn").click(); };
+$("#endBtn").onclick = () => { $("#jumpTo").value = STATE.digits;
+  $("#jumpBtn").click(); };
+$$("[data-jump]").forEach(b => b.onclick = () => {
+  const p = +b.dataset.jump, len = +(b.dataset.len || 1);
+  $("#jumpTo").value = p;
+  HILITE = {start: p - 1, end: p - 1 + len}; HILITE_LEN = len; ALL_HITS = [];
+  showDigits(p, len);
+});
+
+/* Jumping straight from a search hit into the reel. */
+function gotoDigit(position, length, hits) {
+  ALL_HITS = hits || [];
+  HILITE_LEN = length;
+  $$("#tabs .tab").forEach(x => x.classList.toggle("on", x.dataset.tab === "digits"));
+  $$("[data-panel]").forEach(p => p.classList.toggle("hide", p.dataset.panel !== "digits"));
+  showDigits(position, length);
+  // The reader was looking at a search card halfway down the page; bring the
+  // reel to them rather than leaving them staring at empty space.
+  window.scrollTo(0, Math.max(0, $("#tabs").offsetTop - 70));
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-goto]");
+  if (!b) return;
+  gotoDigit(+b.dataset.goto, +b.dataset.len,
+            JSON.parse(b.dataset.hits || "[]"));
+});
 
 /* ---------- wall ---------- */
 $("#wallW").oninput = () => $("#wLbl").textContent = $("#wallW").value + " px";

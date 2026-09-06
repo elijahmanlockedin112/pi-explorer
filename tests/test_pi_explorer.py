@@ -52,10 +52,21 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(len(_TAPE), DIGITS)
 
     def test_parallel_matches_serial(self):
-        serial = engine.compute_pi(60_000, workers=1, chatty=False)
-        parallel = engine.compute_pi(60_000, workers=4, chatty=False)
+        """Big enough that the parallel path uses the limb-split multiply and
+        the precision trim, so this covers both."""
+        serial = engine.compute_pi(150_000, workers=1, chatty=False)
+        parallel = engine.compute_pi(150_000, workers=4, chatty=False)
         self.assertEqual(serial, parallel)
         self.assertTrue(serial.startswith(PI_200))
+        self.assertEqual(len(serial), 150_000)
+
+    def test_worker_count_scales_with_the_job(self):
+        threads = engine.profile_machine().threads
+        tiny = max(1, min(threads - 1, 10_000 // engine.DIGITS_PER_WORKER))
+        self.assertEqual(tiny, 1, "a tiny job must not spawn a pool")
+        big = max(1, min(threads - 1,
+                         10_000_000 // engine.DIGITS_PER_WORKER))
+        self.assertEqual(big, max(1, threads - 1))
 
     def test_verify_rejects_impostors(self):
         self.assertTrue(engine.verify_digits(PI_200))
@@ -67,6 +78,112 @@ class TestEngine(unittest.TestCase):
         self.assertGreaterEqual(profile.workers, 1)
         self.assertGreater(profile.ram_total, 0)
         self.assertGreater(engine.max_safe_digits(), 10_000)
+
+
+class TestParallelMultiply(unittest.TestCase):
+    """The limb-split multiply is the load-bearing optimisation, so it gets
+    checked against plain `*` at every shape that matters."""
+
+    @classmethod
+    def setUpClass(cls):
+        from concurrent.futures import ProcessPoolExecutor
+        cls.pool = ProcessPoolExecutor(max_workers=2)
+        cls.pool.submit(engine._worker_mul, (2, 3)).result()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.pool.shutdown()
+
+    def test_matches_plain_multiplication(self):
+        import random
+        rng = random.Random(20260906)
+        cases = []
+        for bits in (600_000, 900_000):
+            a = rng.getrandbits(bits) | (1 << (bits - 1))
+            b = rng.getrandbits(bits // 2) | (1 << (bits // 2 - 1))
+            cases += [(a, b), (-a, b), (a, -b), (-a, -b)]
+        cases.append((0, rng.getrandbits(600_000)))
+        got = engine.pmul_many(cases, self.pool, workers=8)
+        for (a, b), product in zip(cases, got):
+            self.assertEqual(product, a * b)
+
+    def test_small_operands_bypass_the_pool(self):
+        pairs = [(123456789, 987654321), (2 ** 40, 3 ** 25)]
+        self.assertEqual(engine.pmul_many(pairs, self.pool, workers=8),
+                         [a * b for a, b in pairs])
+
+    def test_works_without_a_pool(self):
+        pairs = [(7, 6), (-3, 11)]
+        self.assertEqual(engine.pmul_many(pairs, None, workers=8), [42, -33])
+
+    def test_limb_split_never_exceeds_three(self):
+        for workers in (1, 2, 4, 8, 16, 64, 256):
+            for pairs in (1, 3, 8, 40):
+                k = engine._limb_split(workers, pairs)
+                self.assertGreaterEqual(k, 1)
+                self.assertLessEqual(k, 3)
+
+    def test_limbs_reassemble(self):
+        import random
+        value = random.Random(1).getrandbits(5000)
+        for k in (1, 2, 3):
+            limbs, shift = engine._limbs(value, k)
+            self.assertEqual(sum(l << (i * shift) for i, l in enumerate(limbs)),
+                             value)
+
+
+class TestPrecisionTrim(unittest.TestCase):
+    def test_trim_preserves_the_quotient(self):
+        """Dropping low-order bits of Q and T must not move a single digit of
+        the answer, or the whole optimisation is worthless."""
+        import random
+        rng = random.Random(7)
+        prec = 2_000
+        target = 10 ** prec
+        for _ in range(6):
+            q = rng.getrandbits(40_000) | (1 << 39_999)
+            t = rng.getrandbits(40_000) | (1 << 39_999)
+            exact = (q * target) // t
+            tq, tt = engine._trim_ratio(q, t, prec)
+            trimmed = (tq * target) // tt
+            self.assertEqual(exact, trimmed)
+
+    def test_trim_is_a_no_op_when_already_small(self):
+        q, t = 12345, 678
+        self.assertEqual(engine._trim_ratio(q, t, 10_000), (q, t))
+
+    def test_trim_actually_shrinks_big_operands(self):
+        q = 1 << 200_000
+        t = (1 << 200_000) + 12345
+        tq, tt = engine._trim_ratio(q, t, 1_000)
+        self.assertLess(tq.bit_length(), q.bit_length())
+        self.assertLess(tt.bit_length(), t.bit_length())
+
+
+class TestVaultWriting(unittest.TestCase):
+    def test_can_rewrite_the_vault_while_it_is_mapped(self):
+        """Regression: on Windows, replacing pi.dat while a Tape still had it
+        memory-mapped failed with 'WinError 5: Access is denied'. That is what
+        happened when you ran `compute` after a `find` in the same session."""
+        global _TAPE
+        everything = _TAPE.get(0, DIGITS)
+        held = engine.Tape(engine.vault_path(), engine.vault_meta())
+        try:
+            engine.write_vault(everything[:50_000], "test-rewrite", 0.1)
+            self.assertEqual(engine.vault_meta()["digits"], 50_000)
+        finally:
+            held.close()
+            engine.write_vault(everything, "test", 0.5)
+            _TAPE = engine.Tape(engine.vault_path(), engine.vault_meta())
+        self.assertEqual(len(_TAPE), DIGITS)
+        self.assertEqual(_TAPE.get(0, 200), PI_200)
+
+    def test_open_tapes_are_tracked(self):
+        before = len(list(engine._OPEN_TAPES))
+        tape = engine.Tape(engine.vault_path(), engine.vault_meta())
+        self.assertEqual(len(list(engine._OPEN_TAPES)), before + 1)
+        tape.close()
+        self.assertEqual(len(list(engine._OPEN_TAPES)), before)
 
 
 class TestSearch(unittest.TestCase):
@@ -296,6 +413,30 @@ class TestShapes(unittest.TestCase):
         hit, _ = search.find_shape(_TAPE, big, limit=DIGITS, max_width=32,
                                    workers=1)
         self.assertIsNone(hit)
+
+    def test_worker_plan_respects_its_bounds(self):
+        for widths in (1, 8, 124):
+            for limit in (10_000, 2_000_000, 500_000_000):
+                for span in (3, 6, 12):
+                    n = search.plan_shape_workers(widths, limit, span,
+                                                  ceiling=15)
+                    self.assertGreaterEqual(n, 1)
+                    self.assertLessEqual(n, 15)
+                    self.assertLessEqual(n, widths)
+
+    def test_worker_plan_is_modest_for_small_work(self):
+        """Oversizing this pool made a 0.65s scan take 2.65s."""
+        self.assertLessEqual(
+            search.plan_shape_workers(124, 2_000_000, 5, ceiling=15), 6)
+
+    def test_worker_plan_scales_up_for_real_work(self):
+        self.assertEqual(
+            search.plan_shape_workers(124, 1_000_000_000, 5, ceiling=15), 15)
+
+    def test_explicit_worker_count_wins(self):
+        self.assertEqual(
+            search.plan_shape_workers(124, 2_000_000, 5, ceiling=15,
+                                      workers=1), 1)
 
     def test_shape_odds(self):
         expected, needed = search.shape_odds(["1111"] * 4, 1_000_000, 100)

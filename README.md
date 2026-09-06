@@ -168,7 +168,8 @@ $ python pi.py shape pi
   grid                     5 x 4 = 20 pixels
   odds per spot            1 in 1,048,576
   row widths tried         124 (5-128)
-  scanning on 15 cores... 386ms
+  workers                  4 (sized to the work)
+  scanning on 4 cores... 387ms
 
   FOUND at digit 1,543 when pi is laid out 73 pixels wide
 ```
@@ -223,31 +224,66 @@ exact integer, so the whole series collapses into one big rational and the
 only expensive steps are a handful of enormous multiplications, one square
 root, and one division.
 
-**It uses your machine.** Term blocks are split across every core but one and
-merged in a parallel tree; the square root of 10005 runs on its own core
-concurrently with the series, because it does not depend on it. The digit
-ceiling comes from your actual free RAM, and `--auto` picks the biggest round
-number it can finish inside 30 seconds.
+**It uses your machine, and it uses the right amount of it.** Four things
+matter here, in order of how much they bought:
 
-On a 16-thread desktop:
+1. **The parallel multiply.** Binary splitting parallelises beautifully at the
+   bottom of the tree and not at all at the top — the last merges are one or
+   two enormous multiplications, which is exactly where a 16-core machine sits
+   at 1/16 utilisation. So the parallelism moves *inside* the multiply: cut
+   each operand into k limbs and the product becomes k² independent limb
+   products that reassemble with shifts and adds. It is more total work, but
+   it is spread across cores, and wall-clock is what you are buying.
+   **Measured 3.1× on 2M-digit operands.**
+2. **Trimming before the divide.** Q and T come out of the series with roughly
+   twice as many digits as the answer needs — for a million digits of π they
+   run to nearly two million each. Only their *ratio* matters, so shifting
+   both down by the same amount leaves the quotient untouched well past the
+   precision being kept, and the final multiply and division shrink with it.
+   **The division dropped from 6.05s to 2.26s.**
+3. **A pool sized to the job.** Spawning a worker costs real time, so the pool
+   scales with the digit count instead of the core count. This is not a
+   micro-optimisation: at 100,000 digits, fifteen workers are **eleven times
+   slower** than none. Measured optimum is ~3 workers at 400k, ~8 at 1M, all
+   of them past 2M — and `--workers` still overrides if you want to watch all
+   the cores light up.
+4. **Overlapping the square root.** `sqrt(10005)` does not depend on the
+   series, so it runs on its own core the whole time the splitting happens.
 
-| digits | time | notes |
-| --- | --- | --- |
-| 100,000 | 0.2s | |
-| 1,000,000 | 5.1s | 7.1s single-threaded |
-| 2,000,000 | 15.2s | |
-| 5,000,000 | ~50s | |
+On a 16-thread desktop, and every number here is measured, not projected:
+
+| digits | before | now | single core |
+| --- | --- | --- | --- |
+| 100,000 | 0.15s | 0.15s | 0.15s |
+| 500,000 | 1.56s | **1.23s** | 2.06s |
+| 1,000,000 | 5.09s | **2.81s** | 6.38s |
+| 2,000,000 | 15.25s | **7.85s** | 20.2s |
+| 4,000,000 | — | **23.3s** | — |
 
 ```
 $ python pi.py compute 2000000
-  141,030 Chudnovsky terms  |  15 workers  |  ~0.08 GB peak RAM
-  splitting across 15 cores         2.76s
-  collecting sqrt(10005)            1.88s
-  final merge                       3.93s
-  one enormous division             6.05s
-  rendering to decimal              600ms
-  2,000,000 digits in 15.25s (131,126 digits/sec)
+  141,030 Chudnovsky terms  |  15 workers  |  ~0.10 GB peak RAM
+  splitting 64 blocks on 15 cores   1.72s
+  merging the tree                  2.77s
+  collecting sqrt(10005)            202ms
+  trimming to working precision       0ms
+  assembling the numerator          293ms
+  one enormous division             2.26s
+  rendering to decimal              612ms
+  2,000,000 digits in 7.96s (251,103 digits/sec)
 ```
+
+The digit ceiling comes from your actual free RAM (measured at ~33 bytes per
+digit, rounded well up), and `--auto` picks the biggest round number it can
+finish inside 30 seconds — raise that with `--patience 120` if you want to go
+deeper.
+
+One thing that was tried and rejected: replacing the final division with a
+Newton–Raphson reciprocal so it could be parallelised too. CPython routes huge
+integer division through libmpdec already, and it is good — a 4M-by-2M-digit
+division costs 2.26s against 1.09s for the equivalent multiply, so a Newton
+scheme needing ~6 multiplies would have been *slower*. It was measured before
+it was written.
 
 Searching does not care how big the file gets. Digits are stored once in
 `~/.pi_explorer/pi.dat` and opened with `mmap`, so the OS pages in only the

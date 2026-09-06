@@ -12,8 +12,9 @@ from pathlib import Path
 from . import __version__
 from .engine import (BYTES_PER_DIGIT, DEFAULT_DIGITS, Tape, compute_pi,
                      ensure_tape, estimate_seconds, max_safe_digits,
-                     profile_machine, suggested_digits, vault_meta, vault_path,
-                     verify_digits, window, write_vault)
+                     plan_workers, profile_machine, suggested_digits,
+                     vault_meta, vault_path, verify_digits, window,
+                     write_vault)
 from .stats import prob_appears, expected_hits
 from .ui import (BLOCK, C, COLOR, DOT, SIGMA, banner, commas, fg, human_count,
                  human_time, kv, meter, note, paint_digits, rule, table,
@@ -39,10 +40,20 @@ class Context:
             self._tape = ensure_tape(want, workers=self.workers, chatty=chatty)
         return self._tape
 
-    def reload(self) -> None:
+    def release(self) -> None:
+        """Drop the memory map.
+
+        Windows will not let anything replace a file that is still mapped, so
+        every code path that rewrites the vault has to let go of it first --
+        otherwise `compute` after a `find` dies with 'Access is denied'.
+        """
         if self._tape is not None:
             self._tape.close()
             self._tape = None
+
+    # Kept as the old name; releasing and reloading are the same operation
+    # here, since the tape is reopened lazily on next use.
+    reload = release
 
 
 def _window(tape: Tape, args) -> int:
@@ -57,7 +68,6 @@ def cmd_compute(ctx: Context, args) -> int:
     profile = profile_machine()
     print(rule("machine"))
     print(kv("hardware", profile.describe()))
-    print(kv("workers", f"{ctx.workers or profile.workers} of {profile.threads}"))
     print(kv("digit ceiling", f"{commas(max_safe_digits())} "
                               f"{C.GREY}(RAM-limited){C.RESET}"))
 
@@ -67,6 +77,10 @@ def cmd_compute(ctx: Context, args) -> int:
         print(kv("auto target", f"{commas(target)} "
                                 f"{C.GREY}(~{human_time(estimate_seconds(target))}"
                                 f"){C.RESET}"))
+
+    planned = plan_workers(target, ctx.workers)
+    print(kv("workers", f"{planned} of {profile.threads} "
+                        f"{C.GREY}(sized to the job){C.RESET}"))
 
     if target > max_safe_digits():
         raise SystemExit(
@@ -85,6 +99,10 @@ def cmd_compute(ctx: Context, args) -> int:
     if estimate > 20:
         print(note(f"estimated {human_time(estimate)} -- "
                    f"go make a coffee.\n"))
+    # Let go of the old digits before building the new ones: it frees the
+    # memory, and on Windows it is the difference between replacing the vault
+    # file and being told access is denied.
+    ctx.release()
     started = time.perf_counter()
     digits = compute_pi(target, workers=ctx.workers, chatty=True)
     elapsed = time.perf_counter() - started
@@ -173,8 +191,8 @@ def cmd_import(ctx: Context, args) -> int:
         digits = digits[1:]
     if not verify_digits(digits):
         raise SystemExit(f"{C.RED}That file does not start with pi.{C.RESET}")
+    ctx.release()          # unmap before replacing the vault file
     write_vault(digits, f"imported:{source.name}", 0.0)
-    ctx.reload()
     print(f"  {C.GREEN}imported {commas(len(digits))} digits{C.RESET}")
     return 0
 
@@ -698,7 +716,8 @@ def cmd_shapes(ctx: Context, args) -> int:
 
 
 def cmd_shape(ctx: Context, args) -> int:
-    from .search import find_shape, parse_shape, render_shape, shape_odds
+    from .search import (find_shape, parse_shape, plan_shape_workers,
+                         render_shape, shape_odds)
     tape = ctx.tape(args.digits)
     limit = _window(tape, args)
     try:
@@ -721,21 +740,23 @@ def cmd_shape(ctx: Context, args) -> int:
     print(kv("odds per spot", f"1 in {commas(2**cells)}"))
     print(kv("bit rule", f"{args.bits} "
                          f"{C.GREY}({'0-4 dark, 5-9 light' if args.bits=='half' else 'even dark, odd light'}){C.RESET}"))
+    planned = plan_shape_workers(widths, limit, span,
+                                 profile_machine().workers, args.workers)
     print(kv("row widths tried", f"{widths} "
                                  f"{C.GREY}({max(span, args.min_width or span)}"
                                  f"-{args.max_width}){C.RESET}"))
+    print(kv("workers", f"{planned} {C.GREY}(sized to the work){C.RESET}"))
     print(kv("expected finds", f"{expected:.4f}"))
     print(note(f"  reflowing the same digits into different row widths is what "
                f"makes this findable at all -- it multiplies your chances by "
                f"{widths}."))
 
     started = time.perf_counter()
-    print(note(f"\n  scanning on {args.workers or profile_machine().workers} "
-               f"cores..."), end=" ", flush=True)
+    print(note(f"\n  scanning on {planned} "
+               f"{'core' if planned == 1 else 'cores'}..."), end=" ", flush=True)
     hit, tried = find_shape(tape, shape, limit=limit,
                             min_width=args.min_width, max_width=args.max_width,
-                            rule=args.bits,
-                            workers=args.workers or profile_machine().workers)
+                            rule=args.bits, workers=planned)
     print(note(human_time(time.perf_counter() - started)))
 
     print()

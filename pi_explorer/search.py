@@ -14,6 +14,7 @@ __all__ = [
     "TEXT_MODES", "encode_text", "decode_letters", "letter_stream",
     "date_variants", "parse_date",
     "BITS_RULES", "bit_tape", "parse_shape", "SHAPE_LIBRARY", "find_shape",
+    "plan_shape_workers",
     "render_shape", "shape_odds",
 ]
 
@@ -349,6 +350,24 @@ def _shape_scan(job):
                 return width, pos
         pos = bits.find(head, pos + 1, last_start + span)
     return None
+
+
+def plan_shape_workers(widths: int, limit: int, span: int, ceiling: int,
+                       workers: int | None = None) -> int:
+    """How many processes a shape hunt deserves.
+
+    Scanning is cheap and spawning is not, so an oversized pool loses badly:
+    on 2M digits, fifteen workers took 2.65s where four took 0.65s. Estimate
+    the serial cost -- one candidate per 2**span positions, a couple hundred
+    nanoseconds each -- and trade it against ~0.12s of spawn per worker. The
+    optimum of s/w + cw is w = sqrt(s/c).
+    """
+    if workers is not None:
+        return max(1, int(workers))
+    candidates = widths * limit / float(1 << min(span, 30))
+    serial_seconds = candidates * 2e-7
+    best = int(round((serial_seconds / 0.12) ** 0.5))
+    return max(1, min(ceiling, widths, best))
 
 
 def find_shape(tape: Tape, shape: list[str], limit: int | None = None,

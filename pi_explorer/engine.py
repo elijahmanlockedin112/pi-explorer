@@ -12,12 +12,14 @@ computation is a handful of enormous multiplications and exactly one division.
 
 from __future__ import annotations
 
+import gc
 import json
 import math
 import mmap
 import os
 import sys
 import time
+import weakref
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -26,7 +28,8 @@ from .ui import C, commas, human_time, note
 __all__ = [
     "MachineProfile", "profile_machine", "compute_pi", "Tape", "ensure_tape",
     "vault_meta", "vault_path", "write_vault", "PI_TRUTH_100", "DEFAULT_DIGITS",
-    "max_safe_digits", "estimate_seconds", "VAULT",
+    "max_safe_digits", "estimate_seconds", "VAULT", "plan_workers",
+    "pmul_many", "DIGITS_PER_WORKER",
 ]
 
 # Chudnovsky gains ~14.18 decimal digits per term. This constant is why a
@@ -37,14 +40,21 @@ C3_OVER_24 = 640320 ** 3 // 24
 VAULT = Path(os.environ.get("PI_EXPLORER_HOME", Path.home() / ".pi_explorer"))
 DEFAULT_DIGITS = 100_000
 
-# Peak resident bytes per digit, measured empirically across the whole
-# pipeline (splitting, isqrt, the big divide, decimal rendering). Generous on
-# purpose: running the machine out of memory mid-compute is a miserable way to
-# find out you were optimistic.
-BYTES_PER_DIGIT = 42
+# Peak resident bytes per digit. Measured: 33 in the parent at 2M digits, 25
+# at 4M, plus roughly a third again spread across the workers holding limbs.
+# Rounded well up on purpose -- running the machine out of memory halfway
+# through a long compute is a miserable way to learn you were optimistic.
+BYTES_PER_DIGIT = 56
 
 # Below this, process startup costs more than the work saved.
-PARALLEL_THRESHOLD = 40_000
+PARALLEL_THRESHOLD = 300_000
+
+# Spawning a worker on Windows costs the best part of a tenth of a second, so
+# the pool is sized to the job rather than to the machine. Measured optimum on
+# a 16-thread desktop: ~4 workers at 500k digits, ~8 at 1M, all of them past
+# 2M. Below the threshold a single core genuinely wins -- at 100,000 digits,
+# fifteen workers are eleven times slower than none.
+DIGITS_PER_WORKER = 125_000
 
 # The opening of pi, so we can tell "we computed pi" from "we computed a very
 # confident wrong number".
@@ -143,8 +153,9 @@ def max_safe_digits(profile: MachineProfile | None = None,
 
 
 # Reference point for the cost model: seconds to do this many digits. Measured
-# on a 16-thread desktop; replaced by your own timings after the first run.
-REFERENCE_RUN = (1_000_000, 5.1)
+# on a 16-thread desktop (1M in 2.8s, 2M in 7.8s, 4M in 23.3s); replaced by
+# your own timings after the first real run.
+REFERENCE_RUN = (1_000_000, 2.8)
 # Big-integer work scales like Karatsuba, not linearly. Doubling the digits
 # costs about 2.9x, which is 2**GROWTH.
 GROWTH = 1.53
@@ -170,6 +181,19 @@ def suggested_digits(profile: MachineProfile | None = None,
         if candidate <= ceiling and estimate_seconds(candidate) <= patience:
             return candidate
     return min(ceiling, 25_000)
+
+
+def plan_workers(n_digits: int, workers: int | None = None) -> int:
+    """How many processes this job should actually use.
+
+    Use the whole machine, but only as much of it as the job can keep busy.
+    Past that point the spawn cost is pure loss: fifteen workers on a hundred
+    thousand digits are eleven times slower than one.
+    """
+    if workers is not None:
+        return max(1, int(workers))
+    return max(1, min(profile_machine().workers,
+                      n_digits // DIGITS_PER_WORKER))
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +242,148 @@ def _worker_isqrt(prec: int):
     return math.isqrt(10005 * 10 ** (2 * prec))
 
 
+def _worker_mul(pair):
+    return pair[0] * pair[1]
+
+
+# ---------------------------------------------------------------------------
+# parallel big-integer multiplication
+# ---------------------------------------------------------------------------
+#
+# Binary splitting parallelises beautifully at the bottom of the tree and not
+# at all at the top: the last few merges are one or two enormous multiplies,
+# and that is where a 16-core machine sits at 1/16 utilisation.
+#
+# The fix is to parallelise the multiplication itself. Cut each operand into k
+# limbs and the product becomes k*k independent limb products that reassemble
+# with shifts and adds:
+#
+#     a = SUM a_i * 2^(i*sa)      b = SUM b_j * 2^(j*sb)
+#     a*b = SUM_ij (a_i * b_j) * 2^(i*sa + j*sb)
+#
+# It is more total work than one Karatsuba multiply -- each limb product is
+# cheaper than 1/k^2 of the whole -- but it is spread over k^2 cores, and
+# wall-clock is what we are buying. Measured 3.1x on 2M-digit operands.
+
+# Below this, the process round trip costs more than the multiply saves.
+PARALLEL_MUL_BITS = 400_000
+
+
+def _limbs(value: int, k: int) -> tuple[list[int], int]:
+    shift = (value.bit_length() + k - 1) // k
+    mask = (1 << shift) - 1
+    return [(value >> (i * shift)) & mask for i in range(k)], shift
+
+
+def _limb_split(workers: int, pairs: int) -> int:
+    """How finely to cut operands so every core has something to chew on.
+
+    Splitting into k limbs costs about k^0.4 extra total work, so we only cut
+    as far as there are cores to absorb it. Past k=3 the extra work outweighs
+    the extra parallelism -- measured, not guessed.
+    """
+    k = 1
+    while k < 3 and pairs * (k + 1) ** 2 <= workers * 1.5:
+        k += 1
+    return k
+
+
+def pmul_many(pairs: list[tuple[int, int]], pool, workers: int) -> list[int]:
+    """Multiply a batch of pairs, spreading the big ones over the pool.
+
+    Batching matters: submitting every limb product from every pair in one go
+    keeps all the workers busy instead of draining the pool between products.
+    """
+    if pool is None or not pairs:
+        return [a * b for a, b in pairs]
+
+    k = _limb_split(workers, len(pairs))
+    jobs: list[tuple[int, int]] = []
+    plans: list[tuple] = []
+    for a, b in pairs:
+        sign = 1
+        if a < 0:
+            a, sign = -a, -sign
+        if b < 0:
+            b, sign = -b, -sign
+        if min(a.bit_length(), b.bit_length()) < PARALLEL_MUL_BITS:
+            plans.append((False, sign, a, b))
+            continue
+        # k == 1 still goes to the pool: one whole product per worker is the
+        # right shape when there are already more products than cores.
+        limbs_a, shift_a = _limbs(a, k)
+        limbs_b, shift_b = _limbs(b, k)
+        plans.append((True, sign, len(jobs), k, shift_a, shift_b))
+        jobs.extend((x, y) for x in limbs_a for y in limbs_b)
+
+    products = list(pool.map(_worker_mul, jobs)) if jobs else []
+
+    out: list[int] = []
+    for plan in plans:
+        if not plan[0]:
+            _, sign, a, b = plan
+            out.append(sign * (a * b))
+            continue
+        _, sign, start, kk, shift_a, shift_b = plan
+        total = 0
+        index = start
+        for i in range(kk):
+            for j in range(kk):
+                total += products[index] << (i * shift_a + j * shift_b)
+                index += 1
+        out.append(sign * total)
+    return out
+
+
+def _merge_level(parts: list, pool, workers: int, need_p: bool = True) -> list:
+    """One level of the merge tree, with every multiplication parallelised.
+
+    The top of the tree is only one or two merges, so the parallelism has to
+    come from inside them: four independent products per merge, each cut into
+    limbs. On the very last merge P is dead weight -- nothing will ever be
+    combined with the result -- so we skip it.
+    """
+    merges = [(parts[i], parts[i + 1]) for i in range(0, len(parts) - 1, 2)]
+    leftover = [parts[-1]] if len(parts) % 2 else []
+
+    jobs: list[tuple[int, int]] = []
+    for (p1, q1, t1), (p2, q2, t2) in merges:
+        if need_p:
+            jobs.append((p1, p2))
+        jobs.extend([(q1, q2), (q2, t1), (p1, t2)])
+
+    products = pmul_many(jobs, pool, workers)
+
+    merged = []
+    stride = 4 if need_p else 3
+    for index in range(len(merges)):
+        base = index * stride
+        if need_p:
+            p, qq, qt, pt = products[base:base + 4]
+        else:
+            p = 0
+            qq, qt, pt = products[base:base + 3]
+        merged.append((p, qq, qt + pt))
+    return merged + leftover
+
+
+def _trim_ratio(q: int, t: int, prec: int) -> tuple[int, int]:
+    """Throw away the low-order bits of Q and T before the final division.
+
+    Q and T come out of the series with roughly twice as many digits as the
+    answer needs -- for a million digits of pi they run to nearly two million
+    each. Only the *ratio* matters, so shifting both down by the same amount
+    leaves the quotient alone to well past the precision we are keeping, and
+    the final multiply and divide shrink accordingly. This is the single
+    largest saving in the whole pipeline.
+    """
+    keep = int(prec * 3.3219280948873626) + 256   # target bits + fat guard
+    shift = min(q.bit_length(), t.bit_length()) - keep
+    if shift <= 0:
+        return q, t
+    return q >> shift, t >> shift
+
+
 # ---------------------------------------------------------------------------
 # the main event
 # ---------------------------------------------------------------------------
@@ -229,13 +395,12 @@ def compute_pi(n_digits: int, workers: int | None = None,
     sys.setrecursionlimit(100_000)
 
     profile = profile_machine()
-    if workers is None:
-        workers = profile.workers
-    workers = max(1, int(workers))
+    asked = workers
+    workers = plan_workers(n_digits, workers)
 
     prec = n_digits + 16
     n_terms = int(prec / DIGITS_PER_TERM) + 2
-    parallel = workers > 1 and n_digits >= PARALLEL_THRESHOLD
+    parallel = workers > 1 and (n_digits >= PARALLEL_THRESHOLD or asked)
 
     need = n_digits * BYTES_PER_DIGIT
     if chatty:
@@ -270,9 +435,17 @@ def compute_pi(n_digits: int, workers: int | None = None,
         t = stage("extracting sqrt(10005)")
         root = _worker_isqrt(prec)
         finish("sqrt", t)
+
+        t = stage("trimming to working precision")
+        q, tt = _trim_ratio(q, tt, prec)
+        finish("trim", t)
+
+        t = stage("assembling the numerator")
+        numerator = q * 426880 * root
+        finish("multiply", t)
     else:
-        # Enough chunks to keep every worker fed, few enough that the tree of
-        # merges stays shallow.
+        # Enough leaf blocks to keep every worker fed, few enough that the
+        # tree of merges stays shallow.
         n_chunks = 1
         while n_chunks < workers * 4 and n_terms // (n_chunks * 2) > 64:
             n_chunks *= 2
@@ -280,32 +453,45 @@ def compute_pi(n_digits: int, workers: int | None = None,
         bounds = [(edges[i], edges[i + 1]) for i in range(n_chunks)
                   if edges[i + 1] > edges[i]]
 
-        t = stage(f"splitting across {workers} cores")
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            # Kick off the square root first so it owns a core for the whole
-            # run instead of waiting in line behind the series.
+            # Kick the square root off first so it owns a core for the whole
+            # run instead of queueing behind the series.
             root_future = pool.submit(_worker_isqrt, prec)
-            parts = list(pool.map(_worker_split, bounds))
 
-            # Merge pairwise, level by level; every level is parallel except
-            # the last one, which is a single enormous multiply.
-            while len(parts) > 2:
+            t = stage(f"splitting {len(bounds)} blocks on {workers} cores")
+            parts = list(pool.map(_worker_split, bounds))
+            finish("split", t)
+
+            # While there are plenty of merges to go round, one merge per core
+            # is the efficient shape.
+            t = stage("merging the tree")
+            while len(parts) > 4:
                 pairs = [(parts[i], parts[i + 1])
                          for i in range(0, len(parts) - 1, 2)]
                 leftover = [parts[-1]] if len(parts) % 2 else []
                 parts = list(pool.map(_worker_combine, pairs)) + leftover
-            finish("split", t)
+            # Near the top there are too few merges to fill the machine, so
+            # the parallelism moves inside each multiplication instead.
+            while len(parts) > 1:
+                parts = _merge_level(parts, pool, workers,
+                                     need_p=len(parts) > 2)
+            _p, q, tt = parts[0]
+            finish("merge", t)
 
             t = stage("collecting sqrt(10005)")
             root = root_future.result()
             finish("sqrt", t)
 
-        t = stage("final merge")
-        _p, q, tt = parts[0] if len(parts) == 1 else _combine(parts[0], parts[1])
-        finish("merge", t)
+            t = stage("trimming to working precision")
+            q, tt = _trim_ratio(q, tt, prec)
+            finish("trim", t)
+
+            t = stage("assembling the numerator")
+            numerator = pmul_many([(q * 426880, root)], pool, workers)[0]
+            finish("multiply", t)
 
     t = stage("one enormous division")
-    pi_scaled = (q * 426880 * root) // tt
+    pi_scaled = numerator // tt
     finish("divide", t)
 
     t = stage("rendering to decimal")
@@ -327,6 +513,21 @@ def compute_pi(n_digits: int, workers: int | None = None,
 # the vault: where the digits live between runs
 # ---------------------------------------------------------------------------
 
+# Every live Tape, weakly held. Rewriting the vault has to unmap the old file
+# first (Windows will not replace a mapped file), and the writer has no way to
+# know which part of the program is holding it, so the tapes register here.
+_OPEN_TAPES: "weakref.WeakSet[Tape]" = weakref.WeakSet()
+
+
+def _close_open_tapes() -> int:
+    """Unmap every open tape. They are about to be stale anyway."""
+    tapes = list(_OPEN_TAPES)
+    for tape in tapes:
+        tape.close()
+    gc.collect()
+    return len(tapes)
+
+
 class Tape:
     """A memory-mapped ribbon of pi.
 
@@ -340,6 +541,7 @@ class Tape:
         self.meta = meta or {}
         self._fh = open(self.path, "rb")
         self.mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
+        _OPEN_TAPES.add(self)
 
     def __len__(self) -> int:
         return len(self.mm)
@@ -356,6 +558,7 @@ class Tape:
             self._fh.close()
         except Exception:
             pass
+        _OPEN_TAPES.discard(self)
 
     def get(self, start: int, length: int) -> str:
         start = max(0, start)
@@ -388,11 +591,43 @@ def vault_meta() -> dict:
     return {"digits": 0}
 
 
+def _replace_with_retry(src: Path, dest: Path, attempts: int = 10) -> None:
+    """Move src onto dest, working around Windows file locking.
+
+    Windows refuses to replace a file while anything still holds it open --
+    including one of our own memory maps. Anything that writes the vault is
+    supposed to release its Tape first, but a Tape that was merely dropped
+    rather than closed keeps the mapping alive until the collector runs, so
+    give the collector a nudge and retry before giving up.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dest)
+            return
+        except PermissionError:
+            if attempt == 0:
+                gc.collect()          # finalise any Tape that was dropped
+            elif attempt >= 3 and dest.exists():
+                try:
+                    dest.unlink()     # last resort: unlink, then rename
+                except OSError:
+                    pass
+            time.sleep(0.05 * (attempt + 1))
+    raise SystemExit(
+        f"{C.RED}Could not write {dest}: another process still has the digit "
+        f"file open.{C.RESET}\nClose any other pi-explorer session and try "
+        f"again, or set PI_EXPLORER_HOME to a different folder.")
+
+
 def write_vault(digits: str, source: str, seconds: float) -> None:
     VAULT.mkdir(parents=True, exist_ok=True)
+    # Unmap the previous digits before touching the file. Skipping this is
+    # what produced "WinError 5: Access is denied" when compute followed a
+    # search in the same session.
+    _close_open_tapes()
     tmp = VAULT / "pi.dat.tmp"
     tmp.write_bytes(digits.encode("ascii"))
-    tmp.replace(vault_path())
+    _replace_with_retry(tmp, vault_path())
     (VAULT / "pi.json").write_text(json.dumps({
         "digits": len(digits),
         "source": source,

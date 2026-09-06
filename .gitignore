@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# generated art and scratch output
+out/
+*.png
+*.svg
+!docs/*.png
+
+# the digit vault lives in ~/.pi_explorer, but just in case
+*.dat
+pi.json
